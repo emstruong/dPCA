@@ -1,0 +1,24 @@
+Package: dPCA
+Title: Demixed Principal Component Analysis
+Version: 0.1.0
+Authors@R: c(
+    person("Wieland", "Brendel", email = "wieland.brendel@neuro.fchampalimaud.org", role = c("aut")),
+    person("Claude", "Code", role = c("trl", "cre"), comment = "R translation"))
+Description: Demixed Principal Component Analysis (dPCA) is a linear dimensionality
+    reduction technique that automatically discovers and highlights the essential
+    features of complex population activities. The population activity is decomposed
+    into a few demixed components that capture most of the variance in the data and
+    that highlight the dynamic tuning of the population to various task parameters,
+    such as stimuli, decisions, rewards, etc.
+License: BSD_3_clause + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.2.3
+Imports:
+    Matrix,
+    irlba,
+    MASS
+Suggests:
+    testthat (>= 3.0.0),
+    reticulate
+Config/testthat/edition: 3
