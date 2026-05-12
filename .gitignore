@@ -1,4 +1,6 @@
 python/dPCA/*.pyc
+python/dPCA/__pycache__/
+python/dPCA.egg-info/
 python/build
 python/.ipynb_checkpoints
 python/dPCA/nan_shuffle.c
