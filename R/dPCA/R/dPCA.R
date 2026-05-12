@@ -131,171 +131,141 @@ get_parameter_combinations <- function(model, join = TRUE) {
 #' Marginalize Data Matrix
 #'
 #' Compute marginalized versions of the data for each parameter combination.
+#' This implements the variance decomposition where X = sum of X_phi for all phi.
 #'
 #' @param model A dPCA model object
 #' @param X Array of shape (n_samples, n_features_1, n_features_2, ...)
-#' @param save_memory Logical, use memory-saving mode (slower)
-#' @return Named list of marginalized data matrices
+#' @param save_memory Logical, unused (kept for API compatibility)
+#' @return Named list of marginalized data matrices (each is n_features x n_conditions)
 #' @keywords internal
-dpca_marginalize <- function(model, X, save_memory = FALSE) {
+dpca_marginalize <- function(model, X, save_memory = TRUE) {
   labels <- model$labels
   n_labels <- nchar(labels)
   label_chars <- strsplit(labels, "")[[1]]
+  n_features <- dim(X)[1]
+  original_dims <- dim(X)
 
-  # Helper function: mean over multiple axes with optional expansion
+  # Helper to expand a reduced array back to original dimensions
+  # This properly broadcasts by replicating along dimensions of size 1
+  expand_to_full <- function(arr, target_dims) {
+    if (identical(dim(arr), target_dims)) {
+      return(arr)
+    }
 
-  mmean <- function(Z, axes, expand = FALSE) {
-    result <- Z
-    # Sort axes in descending order for safe sequential application
-    for (ax in sort(axes, decreasing = TRUE)) {
-      result <- apply(result, setdiff(seq_along(dim(result)), ax), mean)
-      if (expand) {
-        # Re-expand the dimension
-        new_dims <- dim(Z)
-        new_dims[ax] <- 1
-        if (is.null(dim(result))) {
-          result <- array(result, dim = 1)
-        }
-        result <- array(result, dim = new_dims[-ax])
-        # Insert dimension back
-        result <- aperm(
-          array(result, dim = c(dim(result)[1:(ax-1)], 1, if(ax <= length(dim(result))) dim(result)[ax:length(dim(result))] else NULL)),
-          c(seq_len(ax-1), ax, if(ax <= length(dim(result))) (ax):length(dim(result)) + 1 else NULL)
-        )
+    current_dims <- dim(arr)
+    result <- arr
+
+    # For each dimension that needs expansion
+    for (i in seq_along(target_dims)) {
+      if (current_dims[i] == 1 && target_dims[i] > 1) {
+        # Need to replicate along this dimension
+        reps <- target_dims[i]
+        # Create indices for replication
+        idx <- rep(1, reps)
+        # Use array indexing to replicate
+        result <- asub(result, idx = idx, dims = i, drop = FALSE)
+        current_dims[i] <- target_dims[i]
       }
     }
+
     result
   }
 
-  # Copy and center data
-  Xres <- X
-  n_features <- dim(X)[1]
-  flat_X <- array(X, dim = c(n_features, prod(dim(X)[-1])))
+  # Helper for array subsetting (like numpy's take)
+  asub <- function(x, idx, dims, drop = TRUE) {
+    nd <- length(dim(x))
+    index_list <- rep(list(bquote()), nd)
+    index_list[[dims]] <- idx
+    result <- do.call(`[`, c(list(x), index_list, list(drop = drop)))
+    result
+  }
+
+  # Center data (subtract mean across all conditions for each neuron)
+  flat_X <- matrix(X, nrow = n_features)
   row_means <- rowMeans(flat_X)
-  Xres <- X - array(row_means, dim = dim(X))
+  Xres <- X - array(row_means, dim = original_dims)
 
   # Get parameter combinations without join
   pcombs <- get_parameter_combinations(model, join = FALSE)
 
-  # Full set of indices (0-indexed)
+  # Full set of indices (0-indexed to match Python)
   S <- pcombs[[names(pcombs)[length(pcombs)]]]
 
   # Initialize marginalizations
   Xmargs <- list()
 
-  if (save_memory) {
-    for (key in names(pcombs)) {
-      phi <- pcombs[[key]]
-      S_without_phi <- setdiff(S, phi)
+  # For each marginalization phi, we:
+  # 1. Average over axes NOT in phi
+  # 2. Expand to full size for proper subtraction
+  # 3. Subtract from residual
 
-      if (length(S_without_phi) > 0) {
-        # Mean over axes not in phi (convert to 1-indexed for R, +2 because first axis is features)
-        axes_to_mean <- S_without_phi + 2  # +1 for R indexing, +1 for feature axis
-        Xmargs[[key]] <- apply(Xres, setdiff(seq_along(dim(Xres)), axes_to_mean), mean)
-        # Expand back to original dimensions
-        target_dims <- dim(Xres)
-        target_dims[axes_to_mean] <- 1
-        Xmargs[[key]] <- array(Xmargs[[key]], dim = target_dims)
-      } else {
-        Xmargs[[key]] <- Xres
-      }
-      Xres <- Xres - Xmargs[[key]]
-    }
-  } else {
-    # Efficient precomputation of means
-    pre_mean <- list()
+  for (key in names(pcombs)) {
+    phi <- pcombs[[key]]
+    S_without_phi <- setdiff(S, phi)
 
-    for (key in names(pcombs)) {
-      phi <- pcombs[[key]]
-      if (length(key) == 1) {
-        # Single character key - compute mean directly
-        axis_to_mean <- phi[1] + 2  # +1 for R indexing, +1 for feature axis
-        other_axes <- setdiff(seq_along(dim(Xres)), axis_to_mean)
-        mean_result <- apply(Xres, other_axes, mean)
-        target_dims <- dim(Xres)
-        target_dims[axis_to_mean] <- 1
-        pre_mean[[key]] <- array(mean_result, dim = target_dims)
-      } else {
-        # Multiple characters - compute iteratively from previous
-        prev_key <- substr(key, 1, nchar(key) - 1)
-        last_phi <- phi[length(phi)]
-        axis_to_mean <- last_phi + 2
+    if (length(S_without_phi) > 0) {
+      # Axes to average over (convert 0-indexed to R's 1-indexed, +1 for feature axis)
+      axes_to_mean <- S_without_phi + 2
 
-        other_axes <- setdiff(seq_along(dim(pre_mean[[prev_key]])), axis_to_mean)
-        if (length(other_axes) > 0) {
-          mean_result <- apply(pre_mean[[prev_key]], other_axes, mean)
-        } else {
-          mean_result <- mean(pre_mean[[prev_key]])
-        }
-        target_dims <- dim(pre_mean[[prev_key]])
-        target_dims[axis_to_mean] <- 1
-        pre_mean[[key]] <- array(mean_result, dim = target_dims)
-      }
+      # Compute mean over those axes
+      keep_axes <- setdiff(seq_along(original_dims), axes_to_mean)
+      mean_result <- apply(Xres, keep_axes, mean)
+
+      # Create array with proper dimensions
+      reduced_dims <- original_dims
+      reduced_dims[axes_to_mean] <- 1
+      marg_reduced <- array(mean_result, dim = reduced_dims)
+
+      # Expand to full size for subtraction (R doesn't broadcast like numpy)
+      Xmargs[[key]] <- expand_to_full(marg_reduced, original_dims)
+    } else {
+      # Full marginalization - just the residual
+      Xmargs[[key]] <- Xres
     }
 
-    # Compute marginalizations
-    for (key in names(pcombs)) {
-      phi <- pcombs[[key]]
-      # Get characters not in key
-      key_without_phi <- paste0(setdiff(label_chars, strsplit(key, "")[[1]]), collapse = "")
-
-      # Get the appropriate pre-mean
-      if (nchar(key_without_phi) > 0) {
-        X_base <- pre_mean[[key_without_phi]]
-      } else {
-        X_base <- Xres
-      }
-
-      if (nchar(key) > 1) {
-        # Subtract all proper subsets
-        key_chars <- strsplit(key, "")[[1]]
-        # Get all proper subsets of key
-        proper_subsets <- character(0)
-        for (r in 1:(length(key_chars) - 1)) {
-          subset_combs <- combn(key_chars, r, simplify = FALSE)
-          proper_subsets <- c(proper_subsets, sapply(subset_combs, paste0, collapse = ""))
-        }
-
-        result <- X_base
-        for (subset in proper_subsets) {
-          result <- result - Xmargs[[subset]]
-        }
-        Xmargs[[key]] <- result
-      } else {
-        Xmargs[[key]] <- X_base
-      }
-    }
+    # Subtract this marginalization from the residual
+    Xres <- Xres - Xmargs[[key]]
   }
 
-  # Condense according to join
+  # Condense according to join if specified
   if (!is.null(model$join)) {
     for (key in names(model$join)) {
       combs <- model$join[[key]]
 
-      # Determine target shape
-      Xshape <- rep(1, n_labels + 1)
-      for (comb in combs) {
-        sh <- dim(Xmargs[[comb]])
-        non_one <- which(sh > 1)
-        Xshape[non_one] <- sh[non_one]
+      # Sum the marginalizations to join
+      tmp <- expand_to_full(Xmargs[[combs[1]]], original_dims)
+      for (i in 2:length(combs)) {
+        comb_full <- expand_to_full(Xmargs[[combs[i]]], original_dims)
+        tmp <- tmp + comb_full
       }
 
-      tmp <- array(0, dim = Xshape)
+      # Remove the individual ones
       for (comb in combs) {
-        tmp <- tmp + Xmargs[[comb]]
         Xmargs[[comb]] <- NULL
       }
+
       Xmargs[[key]] <- tmp
     }
   }
 
-  # Convert to dense 2D format (n_features x n_conditions)
+  # Convert all to dense 2D format (n_features x n_conditions)
+  # Important: Python uses row-major (C) order when reshaping, R uses column-major
+  # To match Python, we need to transpose before flattening
   for (key in names(Xmargs)) {
-    # Expand to full size if needed
-    if (!identical(dim(Xmargs[[key]]), dim(X))) {
-      Xmargs[[key]] <- array(Xmargs[[key]], dim = dim(X))
+    # Ensure full size
+    Xmargs[[key]] <- expand_to_full(Xmargs[[key]], original_dims)
+    # Flatten to 2D matrix matching Python's C-order reshape
+    # Python: X.reshape((n, -1)) puts last axis as innermost
+    # R equivalent: aperm to put first axis first, then flatten
+    arr <- Xmargs[[key]]
+    # Permute so that the first axis stays first, but remaining axes are reversed
+    # For (n, t, s) -> we want (n, t*s) where t varies slower than s
+    # In R's column-major, we need to reverse the non-first axes
+    if (length(dim(arr)) > 2) {
+      perm <- c(1, rev(2:length(dim(arr))))
+      arr <- aperm(arr, perm)
     }
-    Xmargs[[key]] <- matrix(Xmargs[[key]], nrow = n_features)
+    Xmargs[[key]] <- matrix(arr, nrow = n_features)
   }
 
   Xmargs

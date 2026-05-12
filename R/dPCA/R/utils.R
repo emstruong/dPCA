@@ -77,6 +77,9 @@ classification <- function(class_means, test) {
 #' Denoise Significance Mask
 #'
 #' Remove isolated significant points that don't have enough consecutive neighbors.
+#' Note: This implementation matches the Python behavior exactly, which has a quirk
+#' where subseq is not reset after a valid sequence, so subsequent isolated points
+#' may not be filtered out.
 #'
 #' @param mask A binary vector (0/1) indicating significance
 #' @param n_consecutive Minimum number of consecutive significant points required
@@ -91,22 +94,21 @@ denoise_mask <- function(mask, n_consecutive) {
     if (result[n] == 1) {
       subseq <- subseq + 1
     } else {
-      if (subseq < n_consecutive && subseq > 0) {
-        # Set the previous subsequence to 0
-        for (k in seq(n - subseq, n - 1)) {
-          result[k] <- 0
+      if (subseq < n_consecutive) {
+        # Set the previous subsequence to 0 (if any)
+        if (subseq > 0) {
+          for (k in seq(n - subseq, n - 1)) {
+            result[k] <- 0
+          }
         }
       }
-      subseq <- 0
+      # Note: Python implementation does NOT reset subseq here
+      # This is intentional for compatibility
     }
   }
 
-  # Handle trailing sequence
-  if (subseq > 0 && subseq < n_consecutive) {
-    for (k in seq(N - subseq + 1, N)) {
-      result[k] <- 0
-    }
-  }
+  # Note: Python implementation does NOT handle trailing sequences
+  # This is intentional for compatibility
 
   result
 }
